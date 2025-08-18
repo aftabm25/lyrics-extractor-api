@@ -21,7 +21,8 @@ app = Flask(__name__)
 CORS(app, origins=[
     'http://localhost:3000',  # Local development
     'https://lyrics-extractor-frontend.vercel.app',  # Vercel deployment
-    'https://lyrics-extractor-frontend.vercel.app/'  # With trailing slash
+    'https://lyrics-extractor-frontend.vercel.app/',  # With trailing slash
+    'https://lyrics-extractor-frontend.vercel.app'   # Without trailing slash
 ])  # Enable CORS for specific origins
 
 # Your API credentials
