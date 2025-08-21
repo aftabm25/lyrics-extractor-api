@@ -62,9 +62,9 @@ def _configure_gemini() -> None:
 
 def _call_gemini_lyrics_meaning(lyrics: str, song_id: int | None, custom_instructions: str = None) -> dict:
     _configure_gemini()
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.0-flash-lite')
     
-    # Enhanced prompt for better analysis with 2.5 Flash
+    # Enhanced prompt for better analysis with 2.0 Flash-Lite
     base_prompt = (
         "You are an expert music analyst specializing in lyrical interpretation. "
         "Analyze the given song lyrics with deep emotional and cultural insight. "
