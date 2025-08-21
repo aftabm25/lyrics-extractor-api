@@ -62,7 +62,7 @@ def _configure_gemini() -> None:
 
 def _call_gemini_lyrics_meaning(lyrics: str, song_id: int | None, custom_instructions: str = None) -> dict:
     _configure_gemini()
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.0-flash-lite')
     
     # Base prompt with schema and rules
     base_prompt = (
