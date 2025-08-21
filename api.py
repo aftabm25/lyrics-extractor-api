@@ -440,7 +440,7 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'Lyrics Extractor API',
-        'version': '1.0.0',
+        'version': '1.0.1',
         'endpoints': {
             'lyrics': '/api/lyrics (POST)',
             'lyrics_meaning': '/api/lyrics/meaning (POST)',
@@ -507,7 +507,7 @@ def root():
     """Root endpoint with API information"""
     return jsonify({
         'message': 'Lyrics Extractor API',
-        'version': '1.0.0',
+        'version': '1.0.1',
         'endpoints': {
             'lyrics': '/api/lyrics (POST)',
             'lyrics_meaning': '/api/lyrics/meaning (POST)',
