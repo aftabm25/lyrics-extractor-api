@@ -7,6 +7,7 @@ Provides a simple REST endpoint for lyrics extraction
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from core.working_lyrics_extractor import WorkingSongLyrics
+from core.supabase_client import get_supabase_client
 import os
 import requests
 import json
@@ -24,7 +25,6 @@ CORS(app, origins=[
     'https://lyrics-extractor-frontend.vercel.app/',  # With trailing slash
     'https://lyrics-extractor-frontend.vercel.app'   # Without trailing slash
 ])  # Enable CORS for specific origins
-
 # Your API credentials
 GCS_API_KEY = "AIzaSyCueYKFmg7Je4ywdg2ahmZ_To0AU97P0QI"
 GCS_ENGINE_ID = "e441df94c93ad4421"
@@ -155,6 +155,57 @@ def _call_gemini_lyrics_meaning(lyrics: str, song_id: int | None, custom_instruc
         raise RuntimeError('Invalid model output: lyricsMeaning must be an array')
     return payload
 
+
+def _get_cached_meaning_from_supabase(song_id: str | None, title: str | None, artist: str | None):
+    """Attempt to fetch cached lyrics+meaning JSON from Supabase.
+
+    Table design suggestion: meanings
+      - id: uuid (default)
+      - song_id: text (unique)  -- from Spotify, or our generated key
+      - title: text
+      - artist: text
+      - payload: jsonb          -- full JSON returned by Gemini (plus lyrics if you store it)
+      - created_at: timestamp   -- default now()
+    """
+    try:
+        sb = get_supabase_client()
+    except Exception:
+        return None
+
+    query = sb.table("meanings")
+    if song_id:
+        query = query.select("payload").eq("song_id", str(song_id)).limit(1)
+    elif title and artist:
+        query = query.select("payload").eq("title", title).eq("artist", artist).limit(1)
+    elif title:
+        query = query.select("payload").eq("title", title).limit(1)
+    else:
+        return None
+
+    resp = query.execute()
+    if getattr(resp, "data", None):
+        row = resp.data[0]
+        return row.get("payload")
+    return None
+
+
+def _upsert_meaning_into_supabase(song_id: str | None, title: str | None, artist: str | None, payload: dict):
+    """Upsert the meaning JSON payload into Supabase for future cache hits."""
+    try:
+        sb = get_supabase_client()
+    except Exception:
+        return False
+
+    record = {
+        "song_id": str(song_id) if song_id is not None else None,
+        "title": title,
+        "artist": artist,
+        "payload": payload,
+    }
+    # Use song_id as unique if present; otherwise title+artist can be a unique constraint in DB
+    sb.table("meanings").upsert(record, on_conflict="song_id").execute()
+    return True
+
 @app.route('/api/lyrics', methods=['POST'])
 def get_lyrics():
     """
@@ -258,8 +309,20 @@ def get_lyrics_meaning():
 
         raw_lyrics = data.get('lyrics', '')
         song_id = data.get('songId')
-        custom_instructions = data.get('customInstructions')  # New field for custom instructions
+        title = data.get('title')
+        artist = data.get('artist')
+        custom_instructions = data.get('customInstructions')
 
+        # 1) Try cache by song_id OR title+artist
+        cached = _get_cached_meaning_from_supabase(
+            str(song_id) if song_id is not None else None,
+            title,
+            artist,
+        )
+        if cached:
+            return jsonify({ 'success': True, 'data': cached, 'cached': True })
+
+        # 2) If no cache, normalize input lyrics and call Gemini
         lyrics = _normalize_and_validate_lyrics(raw_lyrics)
 
         payload = _call_gemini_lyrics_meaning(
@@ -268,14 +331,108 @@ def get_lyrics_meaning():
             custom_instructions
         )
 
-        return jsonify({
-            'success': True,
-            'data': payload
-        })
+        # 3) Save to cache (best-effort; do not block response if it fails)
+        try:
+            _upsert_meaning_into_supabase(
+                str(song_id) if song_id is not None else None,
+                title,
+                artist,
+                payload,
+            )
+        except Exception:
+            pass
+
+        return jsonify({ 'success': True, 'data': payload, 'cached': False })
     except (ValueError, RuntimeError) as ve:
         return jsonify({'success': False, 'error': str(ve)}), 400
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/lyrics/meaning/cached', methods=['POST'])
+def get_lyrics_meaning_cached():
+    """
+    Orchestrated endpoint with Supabase caching.
+
+    Flow:
+      1) Try to find existing meaning in Supabase by songId or (title+artist) or title
+      2) If found -> return cached
+      3) Else -> get lyrics (from provided 'lyrics' or by extracting using 'song_name')
+      4) Call Gemini to generate meaning
+      5) Store combined payload (lyrics + meaning) in Supabase for future
+
+    Request body examples:
+      {
+        "songId": "spotifyTrackId-or-custom-id",
+        "title": "string",
+        "artist": "string",
+        "song_name": "string",  // used to extract lyrics if 'lyrics' not provided
+        "lyrics": "string",      // optional direct lyrics
+        "customInstructions": "string"
+      }
+    """
+    try:
+        data = request.get_json() or {}
+
+        song_id = data.get('songId')
+        title = data.get('title')
+        artist = data.get('artist')
+        song_name = data.get('song_name')
+        lyrics_in = data.get('lyrics')
+        custom_instructions = data.get('customInstructions')
+
+        # 1) Cache check
+        cached = _get_cached_meaning_from_supabase(
+            str(song_id) if song_id is not None else None,
+            title,
+            artist,
+        )
+        if cached:
+            return jsonify({ 'success': True, 'data': cached, 'cached': True })
+
+        # 2) Determine lyrics
+        lyrics_text = None
+        chosen_title = title
+        chosen_artist = artist
+        if isinstance(lyrics_in, str) and lyrics_in.strip():
+            lyrics_text = _normalize_and_validate_lyrics(lyrics_in)
+        elif isinstance(song_name, str) and song_name.strip():
+            # Use local extractor to obtain lyrics directly
+            result = lyrics_extractor.get_lyrics(song_name.strip())
+            lyrics_text = _normalize_and_validate_lyrics(result['lyrics'])
+            chosen_title = chosen_title or result.get('title')
+        else:
+            return jsonify({ 'success': False, 'error': 'Provide either lyrics or song_name to extract lyrics' }), 400
+
+        # 3) Generate meaning using Gemini
+        meaning_payload = _call_gemini_lyrics_meaning(
+            lyrics_text,
+            int(song_id) if isinstance(song_id, int) else None,
+            custom_instructions
+        )
+
+        # 4) Build combined payload to store and return
+        combined_payload = {
+            'songId': meaning_payload.get('songId'),
+            'title': chosen_title,
+            'artist': chosen_artist,
+            'lyrics': lyrics_text,
+            'lyricsMeaning': meaning_payload.get('lyricsMeaning', [])
+        }
+
+        # 5) Save to Supabase (best-effort)
+        try:
+            cache_song_id = str(song_id) if song_id is not None else None
+            _upsert_meaning_into_supabase(cache_song_id, chosen_title, chosen_artist, combined_payload)
+        except Exception:
+            pass
+
+        return jsonify({ 'success': True, 'data': combined_payload, 'cached': False })
+
+    except (ValueError, RuntimeError) as ve:
+        return jsonify({ 'success': False, 'error': str(ve) }), 400
+    except Exception as e:
+        return jsonify({ 'success': False, 'error': str(e) }), 500
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -287,6 +444,7 @@ def health_check():
         'endpoints': {
             'lyrics': '/api/lyrics (POST)',
             'lyrics_meaning': '/api/lyrics/meaning (POST)',
+            'lyrics_meaning_cached': '/api/lyrics/meaning/cached (POST)',
             'health': '/api/health (GET)',
             'spotify_token': '/api/spotify/token (POST)'
         }
