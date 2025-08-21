@@ -62,11 +62,13 @@ def _configure_gemini() -> None:
 
 def _call_gemini_lyrics_meaning(lyrics: str, song_id: int | None, custom_instructions: str = None) -> dict:
     _configure_gemini()
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
-    # Base prompt with schema and rules
+    # Enhanced prompt for better analysis with 2.5 Flash
     base_prompt = (
-        "You are given song lyrics. Produce ONLY valid JSON matching EXACTLY this schema, "
+        "You are an expert music analyst specializing in lyrical interpretation. "
+        "Analyze the given song lyrics with deep emotional and cultural insight. "
+        "Produce ONLY valid JSON matching EXACTLY this schema, "
         "with no markdown, no commentary, and no extra keys.\n\n"
         "Schema: {\n"
         "  \"songId\": number | null,\n"
@@ -74,6 +76,13 @@ def _call_gemini_lyrics_meaning(lyrics: str, song_id: int | None, custom_instruc
         "    { \"LineNo\": number, \"Line\": string, \"Type\": \"Lyric\" | \"Meaning\" | \"Stanza\" }\n"
         "  ]\n"
         "}\n\n"
+        "Analysis Guidelines:\n"
+        "- Focus on emotional depth and psychological meaning\n"
+        "- Identify metaphors, similes, and literary devices\n"
+        "- Consider cultural and historical context\n"
+        "- Explain the emotional journey of the song\n"
+        "- Highlight recurring themes and motifs\n"
+        "- Keep interpretations insightful but accessible\n\n"
         "Rules:\n"
         "- Start LineNo at 0 and increment by 1 for each item in lyricsMeaning; strictly ascending.\n"
         "- For each non-empty lyric line from the input, include one Lyric entry with the original line text.\n"
@@ -98,23 +107,13 @@ def _call_gemini_lyrics_meaning(lyrics: str, song_id: int | None, custom_instruc
         f"songId to include: {song_id if song_id is not None else 'null'}\n"
     )
     
-    response = model.generate_content(
-        prompt,
-        generation_config={
-            'temperature': 0.4,
-            'top_p': 0.9,
-            'max_output_tokens': 4096,
-            'response_mime_type': 'application/json',
-        },
-    )
-
     try:
         response = model.generate_content(
             prompt,
             generation_config={
-                'temperature': 0.4,
-                'top_p': 0.9,
-                'max_output_tokens': 4096,
+                'temperature': 0.3,  # Lower for more consistent analysis
+                'top_p': 0.8,
+                'max_output_tokens': 8192,  # Increased for richer analysis
                 'response_mime_type': 'application/json',
             },
         )
